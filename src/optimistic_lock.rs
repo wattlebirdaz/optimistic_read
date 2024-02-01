@@ -1,7 +1,5 @@
 use std::cell::UnsafeCell;
-use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread;
 
 pub struct OptimisticLock<T> {
     version: AtomicU64,
@@ -22,17 +20,20 @@ impl<T> OptimisticLock<T> {
     where
         F: FnMut(&T) -> U,
     {
+        let mut version = self.version.load(Ordering::Acquire);
+        let mut current_version;
         loop {
-            let version = self.version.load(Ordering::Acquire);
             // Safety: We're only reading data, and we check for data integrity after.
             let data = unsafe { &*self.data.get() };
             let result = f(data);
 
-            // Check if the version has changed during the function call
-            if self.version.load(Ordering::Acquire) == version {
+            // compare the version again to check if it has changed
+            current_version = self.version.load(Ordering::Acquire);
+            if version == current_version {
                 return result;
+            } else {
+                version = current_version;
             }
-            // If the version has changed, loop to retry
         }
     }
 
@@ -55,29 +56,3 @@ impl<T> OptimisticLock<T> {
 }
 
 unsafe impl<T> Sync for OptimisticLock<T> where T: Send + Sync {}
-
-fn main() {
-    let lock = OptimisticLock::new(0);
-
-    thread::scope(|s| {
-        for _ in 0..8 {
-            s.spawn(|| {
-                for _ in 0..100000 {
-                    let result = lock.read(|data| *data);
-                    black_box(result);
-                }
-            });
-        }
-        for _ in 0..5 {
-            s.spawn(|| {
-                for _ in 0..100000 {
-                    let result = lock.write(|data| *data = *data + 1);
-                    black_box(result);
-                }
-            });
-        }
-    });
-
-    let result = lock.read(|data| *data);
-    println!("Result: {}", result);
-}
